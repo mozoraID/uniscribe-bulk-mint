@@ -77,7 +77,7 @@ const ROUTER_ABI = [
   },
 ] as const;
 
-// Multicall3 — deployed di semua major chain, address sama
+// Multicall3 — deployed on all major chains, same address
 const MULTICALL3_CONTRACT = "0xcA11bde05977b3631167028862bE2a173976CA11" as `0x${string}`;
 
 const MULTICALL3_ABI = [
@@ -180,9 +180,9 @@ function MintApp() {
     }
 
     setRunning(true);
-    addLog("Simulating untuk cek revert...");
+    addLog("Simulating to check for revert...");
 
-    // Simulate 1 swap dulu — kalau revert, tampilkan alasan tanpa buang gas
+    // Simulate 1 swap first — if it reverts, show the reason without wasting gas
     try {
       await simulateContract(config, {
         address: ROUTER_CONTRACT,
@@ -202,25 +202,25 @@ function MintApp() {
         err?.name === "FetchError";
 
       if (isNetworkError) {
-        addLog("Simulation skip (RPC error) — lanjut kirim tx...");
+        addLog("Simulation skipped (RPC error) — proceeding to send tx...");
       } else {
         const reason = err?.cause?.reason || err?.shortMessage || msg || "Unknown revert";
         addLog(`Simulation FAILED: ${reason}`);
-        addLog("Cek: value cukup? pool ada? hookData benar?");
+        addLog("Check: sufficient value? pool exists? hookData correct?");
         setRunning(false);
         return;
       }
     }
 
     addLog(
-      `Mengirim ${safeAmount}x mint dalam 1 tx via Multicall3 — total ${formatWeiToEth(totalValueWei)} ETH + gas`
+      `Sending ${safeAmount}x mint in 1 tx via Multicall3 — total ${formatWeiToEth(totalValueWei)} ETH + gas`
     );
 
     try {
       let hash: `0x${string}`;
 
       if (safeAmount === 1) {
-        // Single mint langsung ke router
+        // Single mint directly to router
         hash = await writeContractAsync({
           address: ROUTER_CONTRACT,
           abi: ROUTER_ABI,
@@ -229,7 +229,7 @@ function MintApp() {
           value: MINT_VALUE_WEI,
         });
       } else {
-        // Batch N mint dalam 1 tx via Multicall3.aggregate3Value
+        // Batch N mints in 1 tx via Multicall3.aggregate3Value
         const swapCalldata = encodeFunctionData({
           abi: ROUTER_ABI,
           functionName: "swap",
@@ -253,8 +253,8 @@ function MintApp() {
       }
 
       setLastHash(hash);
-      addLog(`Tx terkirim: ${hash}`);
-      addLog(`Menunggu konfirmasi...`);
+      addLog(`Tx sent: ${hash}`);
+      addLog(`Waiting for confirmation...`);
     } catch (err: any) {
       const reason =
         err?.cause?.reason || err?.shortMessage || err?.message || "Transaction failed";
@@ -271,8 +271,8 @@ function MintApp() {
         <h1>Bulk Mint for Uniscribe</h1>
         <p className="sub">
           {safeAmount === 1
-            ? "1 mint = 1 tx langsung ke router."
-            : `${safeAmount} mint = 1 tx via Multicall3 (cukup 1x confirm wallet).`}
+            ? "1 mint = 1 tx directly to router."
+            : `${safeAmount} mints = 1 tx via Multicall3 (only 1 wallet confirmation needed).`}
         </p>
 
         <div className="walletBox">
@@ -322,7 +322,7 @@ function MintApp() {
 
         <div className="status">
           {lastHash && <p>Tx: {lastHash}</p>}
-          {isConfirming && <p>Menunggu konfirmasi...</p>}
+          {isConfirming && <p>Waiting for confirmation...</p>}
           {isSuccess && <p>Confirmed!</p>}
         </div>
       </section>
