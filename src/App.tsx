@@ -126,30 +126,43 @@ const TEST_SETTINGS = { takeClaims: false, settleUsingBurn: false } as const;
 const HOOK_DATA =
   "0x0000000000000000000000000000000000000000000000000000000000000001554e4900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
 
-const UNI20_TOKEN = "0x0cEbB99d04967aD397F5c4d568993e43DC12BabA" as `0x${string}`;
-const TOKENS_PER_MINT = 1000n * 10n ** 18n;
+// The hooks contract IS the ERC-1155 token contract
+const UNI20_TOKEN = "0xDD3bEEF2b5993F42532021D0654fbfEf2d3280cC" as `0x${string}`;
+const UNI20_TOKEN_ID = 1n;
+const LIM_PER_MINT = 1000n;
 
-const ERC20_ABI = [
+const UNI20_ABI = [
   {
     type: "function",
     name: "balanceOf",
     stateMutability: "view",
-    inputs: [{ name: "account", type: "address" }],
+    inputs: [
+      { name: "account", type: "address" },
+      { name: "id", type: "uint256" },
+    ],
     outputs: [{ name: "", type: "uint256" }],
   },
   {
     type: "function",
-    name: "totalSupply",
+    name: "tickInfo",
     stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
+    inputs: [{ name: "id", type: "uint256" }],
+    outputs: [
+      { name: "max", type: "uint128" },
+      { name: "lim", type: "uint128" },
+      { name: "minted", type: "uint128" },
+      { name: "deployer", type: "address" },
+      { name: "deployedAt", type: "uint256" },
+    ],
   },
   {
     type: "event",
-    name: "Transfer",
+    name: "TransferSingle",
     inputs: [
+      { name: "operator", indexed: true, type: "address" },
       { name: "from", indexed: true, type: "address" },
       { name: "to", indexed: true, type: "address" },
+      { name: "id", indexed: false, type: "uint256" },
       { name: "value", indexed: false, type: "uint256" },
     ],
   },
@@ -159,9 +172,8 @@ const ETH_PER_MINT = "0.0005";
 const MINT_VALUE_WEI = parseEther(ETH_PER_MINT);
 const SQRT_PRICE_LIMIT = 4295128740n;
 
-function formatToken(wei: bigint) {
-  const n = Number(wei) / 1e18;
-  return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+function formatToken(n: bigint) {
+  return Number(n).toLocaleString();
 }
 
 type MintEvent = { to: string; value: bigint; time: Date };
@@ -172,26 +184,31 @@ function LiveStats() {
 
   const { data: balance } = useReadContract({
     address: UNI20_TOKEN,
-    abi: ERC20_ABI,
+    abi: UNI20_ABI,
     functionName: "balanceOf",
-    args: [address ?? "0x0000000000000000000000000000000000000000"],
+    args: [address ?? "0x0000000000000000000000000000000000000000", UNI20_TOKEN_ID],
     query: { enabled: isConnected && !!address, refetchInterval: 12_000 },
   });
 
-  const { data: totalSupply } = useReadContract({
+  const { data: info } = useReadContract({
     address: UNI20_TOKEN,
-    abi: ERC20_ABI,
-    functionName: "totalSupply",
+    abi: UNI20_ABI,
+    functionName: "tickInfo",
+    args: [UNI20_TOKEN_ID],
     query: { refetchInterval: 12_000 },
   });
 
   useWatchContractEvent({
     address: UNI20_TOKEN,
-    abi: ERC20_ABI,
-    eventName: "Transfer",
+    abi: UNI20_ABI,
+    eventName: "TransferSingle",
     onLogs(logs) {
       const mints = logs
-        .filter((log) => log.args.from === "0x0000000000000000000000000000000000000000")
+        .filter(
+          (log) =>
+            log.args.from === "0x0000000000000000000000000000000000000000" &&
+            log.args.id === UNI20_TOKEN_ID
+        )
         .map((log) => ({ to: log.args.to as string, value: log.args.value as bigint, time: new Date() }));
       if (mints.length > 0) {
         setActivity((prev) => [...mints, ...prev].slice(0, 20));
@@ -199,7 +216,15 @@ function LiveStats() {
     },
   });
 
-  const totalMints = totalSupply != null ? totalSupply / TOKENS_PER_MINT : null;
+  // tickInfo returns [max, lim, minted, deployer, deployedAt]
+  const [infoMax, , infoMinted] = info ?? [];
+  const totalMints = infoMinted != null ? infoMinted / LIM_PER_MINT : null;
+  const maxMints = infoMax != null ? infoMax / LIM_PER_MINT : null;
+
+  const progressPct =
+    infoMax != null && infoMinted != null && infoMax > 0n
+      ? Math.min(100, Number((infoMinted * 1000n) / infoMax) / 10)
+      : null;
 
   return (
     <section className="card">
@@ -208,16 +233,33 @@ function LiveStats() {
         <div className="stat-box">
           <p className="stat-label">Total Mints</p>
           <p className="stat-value">{totalMints != null ? Number(totalMints).toLocaleString() : "..."}</p>
+          {maxMints != null && (
+            <p className="stat-sub">of {Number(maxMints).toLocaleString()} max</p>
+          )}
         </div>
         <div className="stat-box">
           <p className="stat-label">My UNI20 Balance</p>
           <p className="stat-value">
-            {isConnected && balance != null ? `${formatToken(balance)} UNI20` : isConnected ? "..." : "—"}
+            {isConnected && balance != null
+              ? `${formatToken(balance)} UNI20`
+              : isConnected
+              ? "..."
+              : "—"}
           </p>
+          {isConnected && balance != null && (
+            <p className="stat-sub">{Number(balance / LIM_PER_MINT).toLocaleString()} mints</p>
+          )}
         </div>
       </div>
 
-      <h3 className="activity-title">Live Activity</h3>
+      {progressPct != null && (
+        <div className="progress-wrap">
+          <div className="progress-bar" style={{ width: `${progressPct}%` }} />
+          <span className="progress-label">{progressPct.toFixed(1)}% minted</span>
+        </div>
+      )}
+
+      <h3 className="activity-title" style={{ marginTop: 20 }}>Live Activity</h3>
       <div className="activity">
         {activity.length === 0 ? (
           <p className="activity-empty">Watching for new mints...</p>
