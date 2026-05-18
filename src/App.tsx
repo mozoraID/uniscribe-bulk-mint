@@ -9,6 +9,8 @@ import {
   useDisconnect,
   useWriteContract,
   useWaitForTransactionReceipt,
+  useReadContract,
+  useWatchContractEvent,
 } from "wagmi";
 import { simulateContract } from "wagmi/actions";
 import { injected } from "wagmi/connectors";
@@ -124,9 +126,116 @@ const TEST_SETTINGS = { takeClaims: false, settleUsingBurn: false } as const;
 const HOOK_DATA =
   "0x0000000000000000000000000000000000000000000000000000000000000001554e4900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
 
+const UNI20_TOKEN = "0x0cEbB99d04967aD397F5c4d568993e43DC12BabA" as `0x${string}`;
+const TOKENS_PER_MINT = 1000n * 10n ** 18n;
+
+const ERC20_ABI = [
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalSupply",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "event",
+    name: "Transfer",
+    inputs: [
+      { name: "from", indexed: true, type: "address" },
+      { name: "to", indexed: true, type: "address" },
+      { name: "value", indexed: false, type: "uint256" },
+    ],
+  },
+] as const;
+
 const ETH_PER_MINT = "0.0005";
 const MINT_VALUE_WEI = parseEther(ETH_PER_MINT);
 const SQRT_PRICE_LIMIT = 4295128740n;
+
+function formatToken(wei: bigint) {
+  const n = Number(wei) / 1e18;
+  return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+
+type MintEvent = { to: string; value: bigint; time: Date };
+
+function LiveStats() {
+  const { address, isConnected } = useAccount();
+  const [activity, setActivity] = useState<MintEvent[]>([]);
+
+  const { data: balance } = useReadContract({
+    address: UNI20_TOKEN,
+    abi: ERC20_ABI,
+    functionName: "balanceOf",
+    args: [address ?? "0x0000000000000000000000000000000000000000"],
+    query: { enabled: isConnected && !!address, refetchInterval: 12_000 },
+  });
+
+  const { data: totalSupply } = useReadContract({
+    address: UNI20_TOKEN,
+    abi: ERC20_ABI,
+    functionName: "totalSupply",
+    query: { refetchInterval: 12_000 },
+  });
+
+  useWatchContractEvent({
+    address: UNI20_TOKEN,
+    abi: ERC20_ABI,
+    eventName: "Transfer",
+    onLogs(logs) {
+      const mints = logs
+        .filter((log) => log.args.from === "0x0000000000000000000000000000000000000000")
+        .map((log) => ({ to: log.args.to as string, value: log.args.value as bigint, time: new Date() }));
+      if (mints.length > 0) {
+        setActivity((prev) => [...mints, ...prev].slice(0, 20));
+      }
+    },
+  });
+
+  const totalMints = totalSupply != null ? totalSupply / TOKENS_PER_MINT : null;
+
+  return (
+    <section className="card">
+      <h2 style={{ marginBottom: 16 }}>Live Stats</h2>
+      <div className="stats-grid">
+        <div className="stat-box">
+          <p className="stat-label">Total Mints</p>
+          <p className="stat-value">{totalMints != null ? Number(totalMints).toLocaleString() : "..."}</p>
+        </div>
+        <div className="stat-box">
+          <p className="stat-label">My UNI20 Balance</p>
+          <p className="stat-value">
+            {isConnected && balance != null ? `${formatToken(balance)} UNI20` : isConnected ? "..." : "—"}
+          </p>
+        </div>
+      </div>
+
+      <h3 className="activity-title">Live Activity</h3>
+      <div className="activity">
+        {activity.length === 0 ? (
+          <p className="activity-empty">Watching for new mints...</p>
+        ) : (
+          activity.map((a, i) => (
+            <div key={i} className="activity-row">
+              <span className="activity-addr">
+                {a.to.slice(0, 6)}...{a.to.slice(-4)}
+              </span>
+              <span className="activity-badge">+{formatToken(a.value)} UNI20</span>
+              <span className="activity-time">{a.time.toLocaleTimeString()}</span>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
 
 function formatWeiToEth(wei: bigint) {
   const whole = wei / 1000000000000000000n;
@@ -327,6 +436,8 @@ function MintApp() {
           {isSuccess && <p>Confirmed!</p>}
         </div>
       </section>
+
+      <LiveStats />
 
       <section className="card">
         <h2>Logs</h2>
