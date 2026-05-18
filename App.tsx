@@ -11,8 +11,8 @@ import {
 } from "wagmi";
 import { injected } from "wagmi/connectors";
 import { mainnet } from "wagmi/chains";
+import { parseEther } from "viem";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { toHex } from "viem";
 import "./App.css";
 
 const queryClient = new QueryClient();
@@ -25,55 +25,73 @@ const config = createConfig({
   },
 });
 
-// Custom router contract dari Uniscribe
-// Cek di https://uniscribe.app/mint → inspect network tab saat mint
-const MINT_CONTRACT = "0xdd3beef2b5993f42532021d0654fbfef2d3280cc" as `0x${string}`;
+const ROUTER_CONTRACT = "0x67820c9E1a8aFbA469cB4503086d2266055c8Cff" as `0x${string}`;
 
-// ─── ABI OPTIONS ───────────────────────────────────────────────────────────────
-// Uniscribe menggunakan Custom Router yang wrap Uniswap v4 swap.
-// Coba MODE A dulu. Kalau masih gagal, ganti ke MODE B.
-
-// MODE A: mint() tanpa args (paling umum untuk custom router wrapper)
-const MINT_ABI_A = [
+const ROUTER_ABI = [
   {
     type: "function",
-    name: "mint",
+    name: "swap",
     stateMutability: "payable",
-    inputs: [],
+    inputs: [
+      {
+        name: "key",
+        type: "tuple",
+        components: [
+          { name: "currency0", type: "address" },
+          { name: "currency1", type: "address" },
+          { name: "fee", type: "uint24" },
+          { name: "tickSpacing", type: "int24" },
+          { name: "hooks", type: "address" },
+        ],
+      },
+      {
+        name: "params",
+        type: "tuple",
+        components: [
+          { name: "zeroForOne", type: "bool" },
+          { name: "amountSpecified", type: "int256" },
+          { name: "sqrtPriceLimitX96", type: "uint160" },
+        ],
+      },
+      {
+        name: "testSettings",
+        type: "tuple",
+        components: [
+          { name: "takeClaims", type: "bool" },
+          { name: "settleUsingBurn", type: "bool" },
+        ],
+      },
+      { name: "hookData", type: "bytes" },
+    ],
     outputs: [],
   },
 ] as const;
 
-// MODE B: mint(bytes hookData) — kalau contract butuh inscription data eksplisit
-const MINT_ABI_B = [
-  {
-    type: "function",
-    name: "mint",
-    stateMutability: "payable",
-    inputs: [{ name: "hookData", type: "bytes" }],
-    outputs: [],
-  },
-] as const;
+const SWAP_KEY = {
+  currency0: "0x0000000000000000000000000000000000000000",
+  currency1: "0x0cEbB99d04967aD397F5c4d568993e43DC12BabA",
+  fee: 10000,
+  tickSpacing: 200,
+  hooks: "0xDD3bEEF2b5993F42532021D0654fbfEf2d3280cC",
+} as const;
 
-// Inscription data sesuai protokol Uniscribe
-// Protocol docs: op=MINT, ticker=UNI20, amount=1000
-const INSCRIPTION_JSON = JSON.stringify({
-  p: "uni-20",
-  op: "mint",
-  tick: "UNI20",
-  amt: "1000",
-});
-const HOOK_DATA = toHex(new TextEncoder().encode(INSCRIPTION_JSON)) as `0x${string}`;
+const TEST_SETTINGS = {
+  takeClaims: false,
+  settleUsingBurn: false,
+} as const;
 
-// ─── MINT VALUE ────────────────────────────────────────────────────────────────
-// Harga dari uniscribe.app/mint = 0.0005 ETH per mint
-// 0.0005 ETH = 500_000_000_000_000 wei
-const MINT_VALUE_WEI = 500_000_000_000_000n;
+const HOOK_DATA =
+  "0x0000000000000000000000000000000000000000000000000000000000000001554e4900000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" as `0x${string}`;
 
-// Pilih mode ABI:
-// "A" = mint() tanpa args
-// "B" = mint(bytes hookData)
-const ABI_MODE: "A" | "B" = "A";
+const ETH_PER_MINT = "0.0005";
+const MINT_VALUE_WEI = parseEther(ETH_PER_MINT);
+
+function formatWeiToEth(wei: bigint) {
+  const whole = wei / 1000000000000000000n;
+  const fraction = (wei % 1000000000000000000n).toString().padStart(18, "0");
+  const shortFraction = fraction.slice(0, 8).replace(/0+$/, "");
+  return shortFraction ? `${whole}.${shortFraction}` : whole.toString();
+}
 
 function MintApp() {
   const { address, isConnected } = useAccount();
@@ -97,6 +115,14 @@ function MintApp() {
     return Math.max(1, Math.min(10, Math.floor(amount)));
   }, [amount]);
 
+  const safeDelayMs = useMemo(() => {
+    if (!Number.isFinite(delayMs)) return 500;
+    return Math.max(0, Math.min(10000, Math.floor(delayMs)));
+  }, [delayMs]);
+
+  const totalValueWei = useMemo(() => MINT_VALUE_WEI * BigInt(safeAmount), [safeAmount]);
+  const amountSpecified = useMemo(() => -MINT_VALUE_WEI, []);
+
   function addLog(text: string) {
     setLogs((prev) => [`${new Date().toLocaleTimeString()} - ${text}`, ...prev].slice(0, 80));
   }
@@ -108,38 +134,34 @@ function MintApp() {
     }
 
     setRunning(true);
-    addLog(`Starting bulk mint: ${safeAmount} tx @ 0.0005 ETH each (mode ${ABI_MODE})`);
-    addLog(`hookData: ${HOOK_DATA}`);
+    addLog(`Starting bulk mint: ${safeAmount} tx | total fee ${formatWeiToEth(totalValueWei)} ETH + gas`);
 
     try {
       for (let i = 1; i <= safeAmount; i++) {
-        addLog(`Mint ${i}/${safeAmount}: sending tx...`);
+        addLog(`Mint ${i}/${safeAmount}: sending router swap with ${formatWeiToEth(MINT_VALUE_WEI)} ETH...`);
 
-        let hash: `0x${string}`;
-
-        if (ABI_MODE === "A") {
-          hash = await writeContractAsync({
-            address: MINT_CONTRACT,
-            abi: MINT_ABI_A,
-            functionName: "mint",
-            args: [],
-            value: MINT_VALUE_WEI,
-          });
-        } else {
-          hash = await writeContractAsync({
-            address: MINT_CONTRACT,
-            abi: MINT_ABI_B,
-            functionName: "mint",
-            args: [HOOK_DATA],
-            value: MINT_VALUE_WEI,
-          });
-        }
+        const hash = await writeContractAsync({
+          address: ROUTER_CONTRACT,
+          abi: ROUTER_ABI,
+          functionName: "swap",
+          args: [
+            SWAP_KEY,
+            {
+              zeroForOne: true,
+              amountSpecified,
+              sqrtPriceLimitX96: 4295128740n,
+            },
+            TEST_SETTINGS,
+            HOOK_DATA,
+          ],
+          value: MINT_VALUE_WEI,
+        });
 
         setLastHash(hash);
         addLog(`Mint ${i}/${safeAmount}: tx sent ${hash}`);
 
         if (i < safeAmount) {
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          await new Promise((resolve) => setTimeout(resolve, safeDelayMs));
         }
       }
 
@@ -157,8 +179,7 @@ function MintApp() {
         <p className="badge">Uniscribe Bulk Mint Helper</p>
         <h1>Bulk Mint for Uniscribe</h1>
         <p className="sub">
-          Sends repeated mint txs via Uniscribe Custom Router (Uniswap v4 hook).
-          Setiap tx = 0.0005 ETH + gas.
+          Sends repeated normal Uniscribe router swap + inscription transactions from your connected wallet.
         </p>
 
         <div className="walletBox">
@@ -172,16 +193,23 @@ function MintApp() {
           ) : (
             <button
               onClick={() => connect({ connector: connectors[0] })}
-              disabled={isConnectPending}
+              disabled={isConnectPending || connectors.length === 0}
             >
               {isConnectPending ? "Connecting..." : "Connect Wallet"}
             </button>
           )}
         </div>
 
+        <div className="status">
+          <p>Router: {ROUTER_CONTRACT}</p>
+          <p>UNI20 Hook: {SWAP_KEY.hooks}</p>
+          <p>ETH per mint: {formatWeiToEth(MINT_VALUE_WEI)} ETH</p>
+          <p>Total fee: {formatWeiToEth(totalValueWei)} ETH + gas</p>
+        </div>
+
         <div className="grid">
           <label>
-            Mint count (max 10)
+            Mint count
             <input
               type="number"
               min={1}
@@ -205,43 +233,23 @@ function MintApp() {
           </label>
         </div>
 
-        <div className="status" style={{ marginBottom: 12, fontSize: 13 }}>
-          <span style={{ color: "#60a5fa" }}>
-            Total cost: {((Number(MINT_VALUE_WEI) * safeAmount) / 1e18).toFixed(4)} ETH + gas
-          </span>
-          {" · "}
-          <span style={{ color: "#94a3b8" }}>ABI Mode: {ABI_MODE}</span>
-        </div>
-
         <button className="primary" onClick={bulkMint} disabled={!isConnected || running}>
-          {running ? "Minting..." : `Bulk Mint ${safeAmount}x`}
+          {running
+            ? "Minting..."
+            : `Bulk Mint ${safeAmount}x (${formatWeiToEth(totalValueWei)} ETH + gas)`}
         </button>
 
         <div className="status">
           {lastHash && <p>Last tx: {lastHash}</p>}
           {isConfirming && <p>Waiting confirmation...</p>}
-          {isSuccess && <p>✓ Last tx confirmed.</p>}
+          {isSuccess && <p>Last tx confirmed.</p>}
         </div>
       </section>
 
       <section className="card">
         <h2>Logs</h2>
         <div className="logs">
-          {logs.length === 0 ? (
-            <p>No logs yet.</p>
-          ) : (
-            logs.map((log, i) => <p key={i}>{log}</p>)
-          )}
-        </div>
-      </section>
-
-      <section className="card">
-        <h2>Debug Info</h2>
-        <div className="logs">
-          <p>Contract: {MINT_CONTRACT}</p>
-          <p>Value per mint: 0.0005 ETH ({MINT_VALUE_WEI.toString()} wei)</p>
-          <p>hookData: {HOOK_DATA}</p>
-          <p>ABI Mode: {ABI_MODE} — ganti di baris const ABI_MODE kalau gagal</p>
+          {logs.length === 0 ? <p>No logs yet.</p> : logs.map((log, i) => <p key={i}>{log}</p>)}
         </div>
       </section>
     </main>
