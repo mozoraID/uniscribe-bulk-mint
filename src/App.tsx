@@ -33,7 +33,7 @@ const config = createConfig({
  * - lihat pending tx di wallet / explorer
  * - copy contract address, function, args, dan value
  */
-const MINT_CONTRACT = "0x0000000000000000000000000000000000000000" as `0x${string}`;
+const MINT_CONTRACT = "0xdd3beef2b5993f42532021d0654fbfef2d3280cc" as `0x${string}`;
 
 const MINT_ABI = [
   {
