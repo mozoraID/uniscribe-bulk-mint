@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Analytics } from "@vercel/analytics/react";
 import {
   createConfig,
   http,
@@ -342,6 +343,7 @@ export default function App() {
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
         <MintApp />
+        <Analytics />
       </QueryClientProvider>
     </WagmiProvider>
   );
