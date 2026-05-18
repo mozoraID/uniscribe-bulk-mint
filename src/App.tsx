@@ -54,8 +54,8 @@ function MintApp() {
   const { connect, connectors, isPending: isConnectPending } = useConnect();
   const { disconnect } = useDisconnect();
 
-  const [amount, setAmount] = useState(5);
-  const [delayMs, setDelayMs] = useState(1500);
+  const [amount, setAmount] = useState(1);
+  const [delayMs, setDelayMs] = useState(500);
   const [running, setRunning] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [lastHash, setLastHash] = useState<`0x${string}` | undefined>();
@@ -68,7 +68,7 @@ function MintApp() {
 
   const safeAmount = useMemo(() => {
     if (!Number.isFinite(amount)) return 1;
-    return Math.max(1, Math.min(100, Math.floor(amount)));
+    return Math.max(1, Math.min(10, Math.floor(amount)));
   }, [amount]);
 
   function addLog(text: string) {
@@ -150,7 +150,7 @@ function MintApp() {
             <input
               type="number"
               min={1}
-              max={100}
+              max={10}
               value={amount}
               onChange={(e) => setAmount(Number(e.target.value))}
               disabled={running}
@@ -161,8 +161,8 @@ function MintApp() {
             Delay per tx, ms
             <input
               type="number"
-              min={500}
-              max={30000}
+              min={0}
+              max={10000}
               value={delayMs}
               onChange={(e) => setDelayMs(Number(e.target.value))}
               disabled={running}
